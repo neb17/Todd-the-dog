@@ -1,0 +1,80 @@
+
+name: Build Todd macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and unzip project
+        run: |
+          ZIP=$(find . -maxdepth 3 -name "*.zip" | head -n 1)
+          if [ -n "$ZIP" ]; then
+            mkdir -p extracted
+            unzip -o "$ZIP" -d extracted
+          fi
+
+      - name: Find Xcode project files
+        run: |
+          echo "Searching for project..."
+          find . -name "*.xcodeproj" -o -name "project.yml" -o -name "Package.swift"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          if [ -f project.yml ]; then
+            xcodegen generate
+          elif [ -f extracted/project.yml ]; then
+            cd extracted
+            xcodegen generate
+            cd ..
+          fi
+
+      - name: Build Todd
+        run: |
+          PROJECT=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$PROJECT" ]; then
+            echo "No Xcode project found"
+            exit 1
+          fi
+
+          SCHEME=$(xcodebuild -list -project "$PROJECT" | grep -A 5 "Schemes:" | tail -n +2 | head -n 1 | xargs)
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -derivedDataPath build \
+            MACOSX_DEPLOYMENT_TARGET=12.0 \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Create DMG
+        run: |
+          APP=$(find build/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          mkdir -p dmg
+          cp -R "$APP" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create \
+            -volname "Todd" \
+            -srcfolder dmg \
+            -ov \
+            -format UDZO \
+            Todd-macOS.dmg
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Todd-macOS-DMG
+          path: Todd-macOS.dmg
