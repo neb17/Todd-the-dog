@@ -15,57 +15,73 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find and unzip project
+      - name: Unzip Todd project
         run: |
           ZIP=$(find . -maxdepth 3 -name "*.zip" | head -n 1)
-          if [ -n "$ZIP" ]; then
-            mkdir -p extracted
-            unzip -o "$ZIP" -d extracted
+
+          if [ -z "$ZIP" ]; then
+            echo "Todd ZIP not found!"
+            exit 1
           fi
 
-      - name: Find Xcode project files
-        run: |
-          echo "Searching for project..."
-          find . -name "*.xcodeproj" -o -name "project.yml" -o -name "Package.swift"
+          mkdir -p extracted
+          unzip -o "$ZIP" -d extracted
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate Xcode project
         run: |
-          if [ -f project.yml ]; then
-            xcodegen generate
-          elif [ -f extracted/project.yml ]; then
-            cd extracted
-            xcodegen generate
-            cd ..
-          fi
+          PROJECT_YML=$(find extracted -name "project.yml" | head -n 1)
 
-      - name: Build Todd
-        run: |
-          PROJECT=$(find . -name "*.xcodeproj" | head -n 1)
-          if [ -z "$PROJECT" ]; then
-            echo "No Xcode project found"
+          if [ -z "$PROJECT_YML" ]; then
+            echo "project.yml not found!"
+            find extracted -maxdepth 5 -type f
             exit 1
           fi
 
-          SCHEME=$(xcodebuild -list -project "$PROJECT" | grep -A 5 "Schemes:" | tail -n +2 | head -n 1 | xargs)
+          PROJECT_DIR=$(dirname "$PROJECT_YML")
+
+          echo "Found project in: $PROJECT_DIR"
+
+          cd "$PROJECT_DIR"
+          xcodegen generate
+
+          PROJECT=$(find . -maxdepth 1 -name "*.xcodeproj" -print -quit)
+
+          if [ -z "$PROJECT" ]; then
+            echo "Xcode project generation failed!"
+            exit 1
+          fi
+
+          echo "PROJECT_PATH=$GITHUB_WORKSPACE/$PROJECT_DIR/$PROJECT" >> $GITHUB_ENV
+
+      - name: Build Todd
+        run: |
+          SCHEME=$(xcodebuild -list -json -project "$PROJECT_PATH" | python3 -c 'import json,sys; print(json.load(sys.stdin)["project"]["schemes"][0])')
 
           xcodebuild \
-            -project "$PROJECT" \
+            -project "$PROJECT_PATH" \
             -scheme "$SCHEME" \
             -configuration Release \
             -derivedDataPath build \
-            MACOSX_DEPLOYMENT_TARGET=12.0 \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
             CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: Create DMG
         run: |
-          APP=$(find build/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          APP=$(find build/Build/Products/Release -maxdepth 1 -name "*.app" -print -quit)
+
+          if [ -z "$APP" ]; then
+            echo "App was not built!"
+            exit 1
+          fi
+
           mkdir -p dmg
           cp -R "$APP" dmg/
           ln -s /Applications dmg/Applications
+
           hdiutil create \
             -volname "Todd" \
             -srcfolder dmg \
@@ -78,3 +94,4 @@ jobs:
         with:
           name: Todd-macOS-DMG
           path: Todd-macOS.dmg
+          if-no-files-found: error
